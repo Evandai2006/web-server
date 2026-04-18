@@ -3,8 +3,9 @@ import socket
 import threading
 import time
 import os
+import logging
 
-tz = 8#plz input timezone, BJS = UTC+8
+tz = 8# UTC+8 HKT ONLY, if you want to use this from another time zone, pls change.
 max_threads = 50
 active_clients = []
 lock = threading.Lock()
@@ -14,25 +15,42 @@ r304 = b'HTTP/1.1 304 Not Modified\n\n'
 r400 = b'HTTP/1.1 400 Bad Request\n\nRequest Not Supported'
 r403 = b'HTTP/1.1 403 Forbidden\n\nAccess Denied'
 r404 = b'HTTP/1.1 404 Not Found\n\nFile Not Found'
-r500 = b'HTTP/1.1 500 Internal Server Error\n\nAn error occurred.'
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 visit_blacklist = {'restricted.html'}
-cli_whitelist = {'127.0.0.1'}
+cli_whitelist = {}
 
 global file_mod_times
 file_mod_times = {}
 
+logging.basicConfig(
+    level=logging.INFO,
+    format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt = "%Y-%m-%d %H:%M:%S",
+    filename = 'server.log',
+)
+
 def get_file_mod_times():
-    for filename in ['icon.png', 'root.html', 'page1.html', 'restricted.html']:
+    for filename in ['favicon.ico', 'root.html', 'page1.html', 'restricted.html','polyu.png']:
         file_path = os.path.join(BASE_DIR, filename)
         if os.path.isfile(file_path):
             file_mod_times[f'/{filename}'] = os.path.getmtime(file_path)
     print("File modified time refreshed")
 
 def handle_client(client_connection, client_address):
+
+    def close_connection():
+        client_connection.close()
+        print("Connection terminated.\n")
+        logging.info(f"Connection to client{client_address} closed.")
+        with lock:
+            active_clients.remove(threading.current_thread())
+            logging.info(f"Active thread{threading.current_thread()} removed. Current active thread count: {len(active_clients)}")
+
+    logging.info(f"Connection from{client_address} established.")
+
     while True:
         request = client_connection.recv(1024).decode()
         get_file_mod_times()
@@ -42,11 +60,15 @@ def handle_client(client_connection, client_address):
 
         print('Request:\n')
         print(request)
+        logging.info(f"Client requesting: {request}")
 
         try:
             headers = request.split('\n')
             if len(headers) == 0 or len(headers[0].split()) < 2:
-                response = r400
+                client_connection.sendall(r400)
+                print("Bad request, connection is to terminate.\n")
+                logging.info(f"Server response: {r400}")
+                break
             else:
                 fields = headers[0].split()
                 request_type = fields[0]
@@ -54,7 +76,8 @@ def handle_client(client_connection, client_address):
 
                 if request_type == 'GET':
                     if filename.lstrip('/') in visit_blacklist and client_address[0] not in cli_whitelist:
-                        response = r403
+                        client_connection.sendall(r403)
+                        break
                     else:
                         if filename == '/':
                             filename = '/root.html'
@@ -66,43 +89,57 @@ def handle_client(client_connection, client_address):
                                     if_modified_since = header.split(': ')[1].strip()
                                     if_modified_time = time.mktime(
                                         time.strptime(if_modified_since, '%a, %d %b %Y %H:%M:%S GMT'))
-                                    if_modified_time += tz * 3600  # UTC+8 HKT ONLY, if you want to
+                                    if_modified_time += tz * 3600
 
                                     try:
-                                        '''print(
-                                            f'Comparing timestamps: {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(if_modified_time))} >= {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(last_modified))}')  # Debug output
-                                        print(
-                                            f'Comparing timestamps: {if_modified_time} >= {last_modified}')  # Debug output'''
-
                                         if math.floor(if_modified_time) >= math.floor(last_modified):
                                             response = r304
-                                            print(response)
-                                            client_connection.sendall(response)
-                                            return
                                     except ValueError as e:
-                                        print(f"Could not parse If-Modified-Since date: {e}")
-                                        continue
-                        try:
-                            with open(file_path, 'rb') as fin:
-                                content = fin.read()
-                                response_header = f'HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: {len(content)}\nLast-Modified: {time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(last_modified))}\n\n'
-                                response = response_header.encode() + content
+                                        print(f"Could not parse If-Modified-Since date: {e}, connection is to terminate.\n.")
+                                        client_connection.sendall(r400)
+                                        logging.info(f"Server response: {r400}\nERR MSG: {e}")
+                                        break
+                        else:
+                            try:
+                                with open(file_path, 'rb') as fin:
+                                    content = fin.read()
+                                    if filename.endswith('.png'):
+                                        response_header = f'HTTP/1.1 200 OK\nContent-Type: image/png\nContent-Length: {len(content)}\nLast-Modified: {time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(last_modified))}\n\n'
+                                    else:
+                                        response_header = f'HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: {len(content)}\nLast-Modified: {time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(last_modified))}\n\n'
+                                    response = response_header.encode() + content
 
-                        except FileNotFoundError:
-                            response = r404
+                            except FileNotFoundError:
+                                client_connection.sendall(r404)
+                                print(f"Response: {r404}, connection is to terminate.\n")
+                                break
+
                 else:
-                    response = r400
+                    client_connection.sendall(r400)
+                    print("Bad request, connection is to terminate.\n")
+                    logging.info(f"Server response: {r400}, unsupported connection type.")
+                    break
+
+
 
             print(response)
             client_connection.sendall(response)
+            logging.info(f"Server response: {response}")
+
+            if 'keep-alive' in headers[2]:
+                continue
+            else:
+                break
 
         except Exception as e:
-            print(f'Error while handling request: {e}')
-            response = r500
+            print(f'Error while handling request: {e}, connection is to terminate.\n')
+            response = r400
+            print(response)
             client_connection.sendall(response)
+            logging.info(f"Server response: {r400}\nERR MSG: {e}")
+            break
 
-    client_connection.close()
-    print(f'Client disconnected.')
+    close_connection()
 
 
 def start_server():
@@ -126,6 +163,7 @@ def start_server():
                 thread.start()
             else:
                 print('Max client connections reached. Connection refused.')
+                logging.info(f'Refused connection from {client_address}, reason: max client connections reached.')
 
 
 if __name__ == "__main__":
