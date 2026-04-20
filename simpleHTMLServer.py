@@ -1,6 +1,5 @@
 # @Author Evan DAI
 # @Time 20-April-2026
-
 import math
 import socket
 import threading
@@ -8,7 +7,6 @@ import time
 from datetime import datetime, timedelta
 import os
 import logging
-from distutils.version import Version
 
 '''USER PLEASE SET THESE PARAMETERS'''
 tz = 8# UTC+8 is for HKT ONLY, if you want to use this from another time zone, pls change.
